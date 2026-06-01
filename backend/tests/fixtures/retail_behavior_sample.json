@@ -1,0 +1,83 @@
+{
+  "events": [
+    {
+      "eventId": "evt-001",
+      "sourceSystem": "web",
+      "eventType": "browse",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:00:00"
+    },
+    {
+      "eventId": "evt-002",
+      "sourceSystem": "web",
+      "eventType": "click",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:01:00"
+    },
+    {
+      "eventId": "evt-003",
+      "sourceSystem": "web",
+      "eventType": "cart_add",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:02:00"
+    },
+    {
+      "eventId": "evt-004",
+      "sourceSystem": "web",
+      "eventType": "order_submit",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "orderId": "order-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:03:00"
+    },
+    {
+      "eventId": "evt-005",
+      "sourceSystem": "web",
+      "eventType": "payment_success",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "orderId": "order-001",
+      "paymentId": "payment-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:04:00"
+    },
+    {
+      "eventId": "evt-005",
+      "sourceSystem": "web",
+      "eventType": "payment_success",
+      "userId": "user-001",
+      "visitorId": "visitor-001",
+      "sessionId": "session-001",
+      "productId": "product-001",
+      "orderId": "order-001",
+      "paymentId": "payment-001",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:04:00"
+    },
+    {
+      "eventId": "evt-invalid",
+      "sourceSystem": "web",
+      "eventType": "browse",
+      "sessionId": "",
+      "channelId": "search",
+      "occurredAt": "2026-05-28T09:05:00"
+    }
+  ]
+}
