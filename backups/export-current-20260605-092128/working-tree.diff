@@ -1,0 +1,1809 @@
+﻿diff --git a/.env.example b/.env.example
+index 2ccb811..5419168 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,5 +1,5 @@
+ APP_ENV=development
+-DATABASE_URL=mysql+pymysql://retail:retail@localhost:3306/retail_behavior
++DATABASE_URL=mysql+pymysql://retail:2112@localhost:3306/retail_behavior
+ REDIS_URL=redis://localhost:6379/0
+ AUTH_SECRET=change-me
+ MASKING_DEFAULT=true
+diff --git a/backend/scripts/create_mysql_database.sql b/backend/scripts/create_mysql_database.sql
+index ee4cf80..54fcd14 100644
+--- a/backend/scripts/create_mysql_database.sql
++++ b/backend/scripts/create_mysql_database.sql
+@@ -2,10 +2,16 @@ CREATE DATABASE IF NOT EXISTS retail_behavior
+   CHARACTER SET utf8mb4
+   COLLATE utf8mb4_unicode_ci;
+ 
+-CREATE USER IF NOT EXISTS 'retail'@'localhost' IDENTIFIED BY 'retail';
+-CREATE USER IF NOT EXISTS 'retail'@'127.0.0.1' IDENTIFIED BY 'retail';
++CREATE USER IF NOT EXISTS 'retail'@'localhost' IDENTIFIED BY '2112';
++CREATE USER IF NOT EXISTS 'retail'@'127.0.0.1' IDENTIFIED BY '2112';
++CREATE USER IF NOT EXISTS 'retail'@'%' IDENTIFIED BY '2112';
++
++ALTER USER 'retail'@'localhost' IDENTIFIED BY '2112';
++ALTER USER 'retail'@'127.0.0.1' IDENTIFIED BY '2112';
++ALTER USER 'retail'@'%' IDENTIFIED BY '2112';
+ 
+ GRANT ALL PRIVILEGES ON retail_behavior.* TO 'retail'@'localhost';
+ GRANT ALL PRIVILEGES ON retail_behavior.* TO 'retail'@'127.0.0.1';
++GRANT ALL PRIVILEGES ON retail_behavior.* TO 'retail'@'%';
+ 
+ FLUSH PRIVILEGES;
+diff --git a/backend/src/analytics/behavior_summary_service.py b/backend/src/analytics/behavior_summary_service.py
+index b53a4b5..81db2ed 100644
+--- a/backend/src/analytics/behavior_summary_service.py
++++ b/backend/src/analytics/behavior_summary_service.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from collections import Counter
++from datetime import datetime
+ 
+ from domain.common import utcnow
+ from services.behavior_event_repository import BehaviorEventRecord
+@@ -11,16 +12,77 @@ class BehaviorSummaryService:
+         counts = Counter(event.event_type for event in events)
+         sources = Counter(event.channel_id for event in events)
+         keywords = Counter(event.search_keyword for event in events if event.search_keyword)
++        users = {event.subject_id for event in events}
++        sessions = {event.session_id for event in events if event.session_id}
++        sales_amount = sum(_event_amount(event) for event in events if event.event_type == "payment_success")
++        avg_order_value = sales_amount / counts["payment_success"] if counts["payment_success"] else 0
++        visit_count = counts["browse"]
++        click_count = counts["click"]
++        cart_count = counts["cart_add"]
++        order_count = counts["order_submit"]
++        payment_count = counts["payment_success"]
++        click_through_rate = _rate(click_count, visit_count)
++        cart_rate = _rate(cart_count, visit_count)
++        order_rate = _rate(order_count, cart_count)
++        payment_conversion_rate = _rate(payment_count, visit_count)
++        browse_duration_seconds = _browse_duration_seconds(events)
+         metrics = [
+-            {"key": "visits", "name": "Visits", "value": counts["browse"], "unit": "count", "metricVersion": "v1"},
+-            {"key": "clicks", "name": "Clicks", "value": counts["click"], "unit": "count", "metricVersion": "v1"},
+-            {"key": "cart_adds", "name": "Cart Additions", "value": counts["cart_add"], "unit": "count", "metricVersion": "v1"},
+-            {"key": "orders", "name": "Orders", "value": counts["order_submit"], "unit": "count", "metricVersion": "v1"},
+-            {"key": "payments", "name": "Payments", "value": counts["payment_success"], "unit": "count", "metricVersion": "v1"},
++            {"key": "visits", "name": "Visits", "value": visit_count, "unit": "count", "metricVersion": "v2"},
++            {"key": "unique_users", "name": "Unique Users", "value": len(users), "unit": "count", "metricVersion": "v2"},
++            {"key": "sessions", "name": "Sessions", "value": len(sessions), "unit": "count", "metricVersion": "v2"},
++            {"key": "clicks", "name": "Clicks", "value": click_count, "unit": "count", "metricVersion": "v2"},
++            {"key": "cart_adds", "name": "Cart Additions", "value": cart_count, "unit": "count", "metricVersion": "v2"},
++            {"key": "orders", "name": "Orders", "value": order_count, "unit": "count", "metricVersion": "v2"},
++            {"key": "payments", "name": "Payments", "value": payment_count, "unit": "count", "metricVersion": "v2"},
++            {"key": "sales_amount", "name": "Sales Amount", "value": round(sales_amount, 2), "unit": "amount", "metricVersion": "v2"},
++            {"key": "average_order_value", "name": "Average Order Value", "value": round(avg_order_value, 2), "unit": "amount", "metricVersion": "v2"},
++            {"key": "browse_duration_seconds", "name": "Browse Duration", "value": browse_duration_seconds, "unit": "seconds", "metricVersion": "v2"},
++            {"key": "click_through_rate", "name": "Click Through Rate", "value": click_through_rate, "unit": "percent", "metricVersion": "v2"},
++            {"key": "cart_rate", "name": "Cart Rate", "value": cart_rate, "unit": "percent", "metricVersion": "v2"},
++            {"key": "order_rate", "name": "Order Rate", "value": order_rate, "unit": "percent", "metricVersion": "v2"},
++            {"key": "payment_conversion_rate", "name": "Payment Conversion Rate", "value": payment_conversion_rate, "unit": "percent", "metricVersion": "v2"},
+         ]
+         return {
+             "metrics": metrics,
+             "sourceDistribution": dict(sources),
+             "searchKeywords": dict(keywords),
++            "metricDefinitions": {
++                "payment_conversion_rate": "payment_success / browse within the selected event set",
++                "browse_duration_seconds": "sum of adjacent in-session event gaps capped at 30 minutes",
++            },
+             "freshnessAt": utcnow().isoformat(),
+         }
++
++
++def _rate(numerator: int | float, denominator: int | float) -> float:
++    if denominator <= 0:
++        return 0
++    return round(min(max((numerator / denominator) * 100, 0), 100), 2)
++
++
++def _event_amount(event: BehaviorEventRecord) -> float:
++    value = event.metadata.get("amount", event.metadata.get("price", 0))
++    try:
++        return max(float(value), 0)
++    except (TypeError, ValueError):
++        return 0
++
++
++def _browse_duration_seconds(events: list[BehaviorEventRecord]) -> int:
++    duration = 0
++    sessions: dict[str, list[BehaviorEventRecord]] = {}
++    for event in events:
++        sessions.setdefault(event.session_id, []).append(event)
++    for session_events in sessions.values():
++        ordered = sorted(session_events, key=lambda event: _timestamp(event.occurred_at))
++        for current, next_event in zip(ordered, ordered[1:]):
++            gap = int((_timestamp(next_event.occurred_at) - _timestamp(current.occurred_at)).total_seconds())
++            if 0 < gap <= 1800:
++                duration += gap
++    return duration
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/src/analytics/funnel_service.py b/backend/src/analytics/funnel_service.py
+index 3bafd39..5c67898 100644
+--- a/backend/src/analytics/funnel_service.py
++++ b/backend/src/analytics/funnel_service.py
+@@ -1,5 +1,7 @@
+ from __future__ import annotations
+ 
++from datetime import datetime, timedelta
++
+ from domain.common import utcnow
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+@@ -15,17 +17,19 @@ STAGE_EVENTS = [
+ 
+ class FunnelService:
+     def analyze(self, events: list[BehaviorEventRecord]) -> dict[str, object]:
+-        subjects_by_stage: dict[str, set[str]] = {}
+-        for stage, event_type in STAGE_EVENTS:
+-            subjects_by_stage[stage] = {event.subject_id for event in events if event.event_type == event_type}
++        ordered_paths = _ordered_paths(events)
++        subjects_by_stage = _subjects_by_ordered_stage(ordered_paths)
+         stages = []
+-        previous_count = 0
+         biggest_stage = "browse"
+         biggest_dropoff = -1
+         for index, (stage, _) in enumerate(STAGE_EVENTS):
+             entered = len(subjects_by_stage[stage])
+-            converted = entered if index == len(STAGE_EVENTS) - 1 else len(subjects_by_stage[STAGE_EVENTS[index + 1][0]])
+-            denominator = previous_count or entered
++            converted = (
++                entered
++                if index == len(STAGE_EVENTS) - 1
++                else len(subjects_by_stage[STAGE_EVENTS[index + 1][0]])
++            )
++            denominator = entered
+             dropoff = 0 if denominator == 0 else max(denominator - converted, 0)
+             conversion_rate = 0 if denominator == 0 else min(max((converted / denominator) * 100, 0), 100)
+             dropoff_rate = 0 if denominator == 0 else min(max((dropoff / denominator) * 100, 0), 100)
+@@ -42,5 +46,50 @@ class FunnelService:
+                     "dropoffRate": round(dropoff_rate, 2),
+                 }
+             )
+-            previous_count = entered
+-        return {"stages": stages, "biggestDropoffStage": biggest_stage, "freshnessAt": utcnow().isoformat()}
++        return {
++            "stages": stages,
++            "biggestDropoffStage": biggest_stage,
++            "windowHours": 168,
++            "algorithmVersion": "ordered-path-v2",
++            "freshnessAt": utcnow().isoformat(),
++        }
++
++
++def _ordered_paths(events: list[BehaviorEventRecord]) -> dict[str, list[BehaviorEventRecord]]:
++    paths: dict[str, list[BehaviorEventRecord]] = {}
++    for event in events:
++        paths.setdefault(event.subject_id, []).append(event)
++    return {
++        subject: sorted(subject_events, key=lambda event: _timestamp(event.occurred_at))
++        for subject, subject_events in paths.items()
++    }
++
++
++def _subjects_by_ordered_stage(
++    paths: dict[str, list[BehaviorEventRecord]],
++    window: timedelta = timedelta(days=7),
++) -> dict[str, set[str]]:
++    subjects_by_stage = {stage: set() for stage, _ in STAGE_EVENTS}
++    for subject, events in paths.items():
++        next_index = 0
++        started_at: datetime | None = None
++        for event in events:
++            if next_index >= len(STAGE_EVENTS):
++                break
++            stage, expected_type = STAGE_EVENTS[next_index]
++            if event.event_type != expected_type:
++                continue
++            occurred_at = _timestamp(event.occurred_at)
++            if started_at is None:
++                started_at = occurred_at
++            if occurred_at - started_at > window:
++                break
++            subjects_by_stage[stage].add(subject)
++            next_index += 1
++    return subjects_by_stage
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/src/analytics/product_heat_service.py b/backend/src/analytics/product_heat_service.py
+index a012bab..0571e48 100644
+--- a/backend/src/analytics/product_heat_service.py
++++ b/backend/src/analytics/product_heat_service.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ from collections import Counter
++from datetime import datetime
++from math import exp
+ 
+ from domain.common import utcnow
+ from services.behavior_event_repository import BehaviorEventRecord
+@@ -21,22 +23,25 @@ class ProductHeatService:
+     def rank(self, events: list[BehaviorEventRecord], rank_by: str = "browse") -> dict[str, object]:
+         event_type = RANK_EVENT_MAP.get(rank_by, rank_by)
+         product_names = _product_names(events)
+-        counts = _count_events(events, event_type)
++        counts = _heat_scores(events) if rank_by in {"heat", "heat_score"} else _count_events(events, event_type)
+         browse_counts = _count_events(events, "browse")
+         purchase_counts = _count_events(events, "payment_success")
+         items = []
+         for idx, (product_id, value) in enumerate(counts.most_common(), start=1):
+             conversion = 0 if browse_counts[product_id] == 0 else (purchase_counts[product_id] / browse_counts[product_id]) * 100
+-            items.append(
+-                {
+-                    "productId": product_id,
+-                    "productName": product_names.get(product_id, product_id),
+-                    "rank": idx,
+-                    "value": value,
+-                    "unit": "count",
+-                    "conversionRate": round(min(conversion, 100), 2),
+-                }
+-            )
++            item = {
++                "productId": product_id,
++                "productName": product_names.get(product_id, product_id),
++                "rank": idx,
++                "value": round(value, 2) if isinstance(value, float) else value,
++                "unit": "score" if rank_by in {"heat", "heat_score"} else "count",
++                "conversionRate": round(min(conversion, 100), 2),
++            }
++            if rank_by in {"heat", "heat_score"}:
++                item["algorithmVersion"] = "weighted-decay-v2"
++                item["browseCount"] = browse_counts[product_id]
++                item["purchaseCount"] = purchase_counts[product_id]
++            items.append(item)
+         return {"items": items, "freshnessAt": utcnow().isoformat()}
+ 
+ 
+@@ -65,3 +70,34 @@ def _sale_quantity(event: BehaviorEventRecord) -> int:
+     except (TypeError, ValueError):
+         return 1
+     return quantity if quantity > 0 else 1
++
++
++def _heat_scores(events: list[BehaviorEventRecord]) -> Counter[str]:
++    weights = {
++        "browse": 1,
++        "click": 2,
++        "favorite": 3,
++        "cart_add": 5,
++        "order_submit": 8,
++        "payment_success": 12,
++    }
++    now = utcnow().replace(tzinfo=None)
++    scores: Counter[str] = Counter()
++    browse_counts = _count_events(events, "browse")
++    purchase_counts = _count_events(events, "payment_success")
++    for event in events:
++        if not event.product_id:
++            continue
++        age_days = max((now - _timestamp(event.occurred_at)).total_seconds() / 86400, 0)
++        decay = exp(-age_days / 14)
++        scores[event.product_id] += weights.get(event.event_type, 0) * decay
++    for product_id, browse_count in browse_counts.items():
++        conversion = 0 if browse_count == 0 else purchase_counts[product_id] / browse_count
++        scores[product_id] += min(conversion, 1) * 20
++    return scores
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/src/api/compat.py b/backend/src/api/compat.py
+index 2d70a96..1163dd4 100644
+--- a/backend/src/api/compat.py
++++ b/backend/src/api/compat.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ try:
+-    from fastapi import APIRouter, FastAPI, HTTPException
++    from fastapi import APIRouter, FastAPI, HTTPException, Request
+ except ModuleNotFoundError:
+ 
+     class APIRouter:  # type: ignore[no-redef]
+@@ -33,3 +33,7 @@ except ModuleNotFoundError:
+             super().__init__(detail)
+             self.status_code = status_code
+             self.detail = detail
++
++    class Request:  # type: ignore[no-redef]
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
+diff --git a/backend/src/api/routes/profiles.py b/backend/src/api/routes/profiles.py
+index e321dda..8abadf0 100644
+--- a/backend/src/api/routes/profiles.py
++++ b/backend/src/api/routes/profiles.py
+@@ -16,14 +16,14 @@ def get_user_profile(user_id: str) -> dict[str, object]:
+ 
+ @router.get("/segments")
+ def list_segments() -> dict[str, object]:
+-    return {"items": [{"segmentId": "high_value", "segmentType": "high_value", "name": "High Value", "memberCount": 0, "ruleDescription": "paid users"}]}
++    return {"items": SegmentService().list_segments(repository.accepted_events())}
+ 
+ 
+ @router.get("/segments/{segment_id}/users")
+ def list_segment_users(segment_id: str) -> dict[str, object]:
+-    return {"items": [], "segmentId": segment_id}
++    return {"items": SegmentService().list_segment_users(segment_id, repository.accepted_events()), "segmentId": segment_id}
+ 
+ 
+ @router.get("/purchase-intent/users")
+ def list_purchase_intent_users(user_id: str = "demo-user") -> dict[str, object]:
+-    return {"items": [PurchaseIntentService().classify(user_id, repository.accepted_events())]}
++    return {"items": PurchaseIntentService().list_intents(repository.accepted_events(), user_id)}
+diff --git a/backend/src/api/routes/reports.py b/backend/src/api/routes/reports.py
+index 356bb24..ec869f6 100644
+--- a/backend/src/api/routes/reports.py
++++ b/backend/src/api/routes/reports.py
+@@ -2,24 +2,48 @@ from __future__ import annotations
+ 
+ from dataclasses import asdict
+ 
+-from api.compat import APIRouter
++from api.compat import APIRouter, HTTPException, Request
++from api.schemas.reports import ReportExportRequest
++from domain.enums import ReportType
+ from reports.export_service import ExportService
+ from reports.report_service import ReportService
+ from security.audit_query_service import list_audit_logs
+-from security.auth import DataScope, Principal, Role
++from security.auth import DataScope, PermissionDenied, Principal, Role, principal_from_headers
+ 
+ router = APIRouter()
+ default_principal = Principal("demo", Role.ADMINISTRATOR, DataScope.ALL)
+ 
+ 
+ @router.get("/reports")
+-def list_reports(report_type: str = "behavior_detail") -> dict[str, object]:
+-    return {"items": [ReportService().generate(report_type, {})]}
++def list_reports(report_type: str | None = None) -> dict[str, object]:
++    service = ReportService()
++    reports = service.list_reports(report_type)
++    if not reports:
++        report_types = [report_type] if report_type else [item.value for item in ReportType]
++        reports = [
++            service.generate(item, {}, created_by=default_principal.actor_id)
++            for item in report_types
++            if item is not None
++        ]
++    return {"items": reports}
+ 
+ 
+ @router.post("/reports/{report_type}/exports")
+-def create_report_export(report_type: str) -> dict[str, object]:
+-    return ExportService().create_export(default_principal, report_type, {})
++def create_report_export(
++    report_type: str,
++    export_request: ReportExportRequest,
++    request: Request,
++) -> dict[str, object]:
++    principal = principal_from_headers(dict(request.headers))
++    try:
++        return ExportService().create_export(
++            principal,
++            report_type,
++            export_request.filters,
++            export_request.reason,
++        )
++    except PermissionDenied as exc:
++        raise HTTPException(status_code=403, detail=str(exc)) from exc
+ 
+ 
+ @router.get("/audit-logs")
+diff --git a/backend/src/reports/export_service.py b/backend/src/reports/export_service.py
+index fe55c94..8f4be69 100644
+--- a/backend/src/reports/export_service.py
++++ b/backend/src/reports/export_service.py
+@@ -1,18 +1,255 @@
+ from __future__ import annotations
+ 
++import base64
++import csv
++import io
++import os
++from pathlib import Path
++import re
++
++from analytics.behavior_summary_service import BehaviorSummaryService
++from analytics.funnel_service import FunnelService
++from analytics.product_heat_service import ProductHeatService
++from domain.common import utcnow
++from domain.enums import ReportType
+ from security.audit import audit_recorder
+-from security.auth import Principal, assert_allowed
++from security.auth import PermissionDenied, Principal, assert_allowed
++from security.masking import mask_identifier
++from services.behavior_event_repository import BehaviorEventRecord, BehaviorEventRepository, repository
+ 
+ 
+ class ExportService:
+-    def create_export(self, principal: Principal, report_type: str, filters: dict[str, object], reason: str | None = None) -> dict[str, object]:
+-        assert_allowed(principal, "export", "export", str(filters.get("channelId") or ""))
+-        audit_recorder.log(principal, "export", "report", report_type, reason=reason)
++    def __init__(
++        self,
++        repo: BehaviorEventRepository = repository,
++        storage_path: str | os.PathLike[str] | None = None,
++    ) -> None:
++        self.repo = repo
++        self.storage_path = Path(storage_path or os.getenv("EXPORT_STORAGE_PATH", "var/exports"))
++
++    def create_export(
++        self,
++        principal: Principal,
++        report_type: str,
++        filters: dict[str, object],
++        reason: str | None = None,
++    ) -> dict[str, object]:
++        scope_id = str(filters.get("channelId") or filters.get("channel_id") or "") or None
++        try:
++            assert_allowed(principal, "report", "export", scope_id)
++        except PermissionDenied as exc:
++            audit_recorder.log(
++                principal,
++                "export",
++                "report",
++                report_type,
++                result="denied",
++                reason=str(exc),
++            )
++            raise
++
++        normalized_report_type = self._normalize_report_type(report_type)
++        rows = self._report_rows(normalized_report_type, self._filtered_events(filters))
++        csv_text = self._csv_text(normalized_report_type, rows)
++        file_name = self._write_file(principal, normalized_report_type, csv_text)
++        audit_recorder.log(principal, "export", "report", normalized_report_type, reason=reason)
+         return {
+-            "reportId": f"export-{report_type}",
+-            "reportType": report_type,
++            "reportId": f"export-{normalized_report_type}",
++            "reportType": normalized_report_type,
+             "filters": filters,
+-            "status": "queued",
++            "status": "ready",
+             "sensitiveDataState": "masked",
+-            "exportUri": None,
++            "exportUri": self._data_uri(csv_text),
++            "fileName": file_name,
++            "mimeType": "text/csv",
++            "rowCount": len(rows),
++        }
++
++    def _filtered_events(self, filters: dict[str, object]) -> list[BehaviorEventRecord]:
++        events = self.repo.accepted_events()
++        channel_id = filters.get("channelId") or filters.get("channel_id")
++        product_id = filters.get("productId") or filters.get("product_id")
++        user_id = filters.get("userId") or filters.get("user_id")
++        event_type = filters.get("eventType") or filters.get("event_type")
++        if channel_id:
++            events = [event for event in events if event.channel_id == str(channel_id)]
++        if product_id:
++            events = [event for event in events if event.product_id == str(product_id)]
++        if user_id:
++            events = [event for event in events if event.subject_id == str(user_id)]
++        if event_type:
++            events = [event for event in events if event.event_type == str(event_type)]
++        return events
++
++    def _report_rows(
++        self,
++        report_type: str,
++        events: list[BehaviorEventRecord],
++    ) -> list[dict[str, object]]:
++        if report_type == ReportType.BEHAVIOR_DETAIL.value:
++            return [self._behavior_row(event) for event in events]
++        if report_type == ReportType.PRODUCT_ANALYSIS.value:
++            return ProductHeatService().rank(events, "heat")["items"]  # type: ignore[return-value]
++        if report_type == ReportType.FUNNEL.value:
++            return FunnelService().analyze(events)["stages"]  # type: ignore[return-value]
++        if report_type == ReportType.USER_PROFILE.value:
++            return self._user_profile_rows(events)
++        if report_type == ReportType.USER_SEGMENT.value:
++            return self._user_segment_rows(events)
++        if report_type == ReportType.SALES_CONVERSION.value:
++            return self._sales_conversion_rows(events)
++        return self._operation_effect_rows(events)
++
++    def _behavior_row(self, event: BehaviorEventRecord) -> dict[str, object]:
++        return {
++            "eventId": event.event_id,
++            "eventType": event.event_type,
++            "userId": mask_identifier(event.user_id),
++            "visitorId": mask_identifier(event.visitor_id),
++            "sessionId": mask_identifier(event.session_id),
++            "productId": event.product_id or "",
++            "channelId": event.channel_id,
++            "searchKeyword": event.search_keyword or "",
++            "orderId": mask_identifier(event.order_id),
++            "paymentId": mask_identifier(event.payment_id),
++            "amount": event.metadata.get("amount", event.metadata.get("price", "")),
++            "occurredAt": event.occurred_at,
++        }
++
++    def _user_profile_rows(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        profiles: dict[str, dict[str, object]] = {}
++        for event in events:
++            row = profiles.setdefault(
++                event.subject_id,
++                {
++                    "userId": mask_identifier(event.subject_id),
++                    "visits": 0,
++                    "clicks": 0,
++                    "favorites": 0,
++                    "cartAdds": 0,
++                    "orders": 0,
++                    "payments": 0,
++                    "salesAmount": 0.0,
++                },
++            )
++            self._increment_profile(row, event)
++        return list(profiles.values())
++
++    def _user_segment_rows(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        rows = []
++        for row in self._user_profile_rows(events):
++            visits = int(row["visits"])
++            carts = int(row["cartAdds"])
++            payments = int(row["payments"])
++            sales = float(row["salesAmount"])
++            if payments > 0 and sales >= 1000:
++                segment = "high_value"
++            elif carts >= 2 and payments == 0:
++                segment = "high_intent"
++            elif visits == 0:
++                segment = "silent"
++            else:
++                segment = "active"
++            rows.append({**row, "segment": segment})
++        return rows
++
++    def _sales_conversion_rows(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        summary = BehaviorSummaryService().summarize(events)
++        metrics = {str(metric["key"]): metric["value"] for metric in summary["metrics"]}  # type: ignore[index]
++        return [
++            {
++                "visits": metrics.get("visits", 0),
++                "orders": metrics.get("orders", 0),
++                "payments": metrics.get("payments", 0),
++                "salesAmount": metrics.get("sales_amount", 0),
++                "averageOrderValue": metrics.get("average_order_value", 0),
++                "paymentConversionRate": metrics.get("payment_conversion_rate", 0),
++            }
++        ]
++
++    def _operation_effect_rows(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        summary = BehaviorSummaryService().summarize(events)
++        metrics = [
++            {"metric": metric["key"], "value": metric["value"], "unit": metric["unit"]}
++            for metric in summary["metrics"]  # type: ignore[index]
++        ]
++        source_rows = [
++            {"metric": f"source_{channel}", "value": count, "unit": "count"}
++            for channel, count in summary["sourceDistribution"].items()  # type: ignore[union-attr]
++        ]
++        return metrics + source_rows
++
++    def _increment_profile(self, row: dict[str, object], event: BehaviorEventRecord) -> None:
++        field_by_event = {
++            "browse": "visits",
++            "click": "clicks",
++            "favorite": "favorites",
++            "cart_add": "cartAdds",
++            "order_submit": "orders",
++            "payment_success": "payments",
+         }
++        field = field_by_event.get(event.event_type)
++        if field:
++            row[field] = int(row[field]) + 1
++        if event.event_type == "payment_success":
++            row["salesAmount"] = round(float(row["salesAmount"]) + self._event_amount(event), 2)
++
++    def _event_amount(self, event: BehaviorEventRecord) -> float:
++        try:
++            return max(float(event.metadata.get("amount", event.metadata.get("price", 0))), 0)
++        except (TypeError, ValueError):
++            return 0
++
++    def _csv_text(self, report_type: str, rows: list[dict[str, object]]) -> str:
++        output = io.StringIO()
++        fields = self._fields(report_type, rows)
++        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
++        writer.writeheader()
++        writer.writerows(rows)
++        return output.getvalue()
++
++    def _fields(self, report_type: str, rows: list[dict[str, object]]) -> list[str]:
++        if rows:
++            return list(rows[0].keys())
++        defaults = {
++            ReportType.BEHAVIOR_DETAIL.value: [
++                "eventId",
++                "eventType",
++                "userId",
++                "visitorId",
++                "sessionId",
++                "productId",
++                "channelId",
++                "searchKeyword",
++                "orderId",
++                "paymentId",
++                "amount",
++                "occurredAt",
++            ],
++            ReportType.PRODUCT_ANALYSIS.value: ["productId", "productName", "rank", "value", "unit", "conversionRate"],
++            ReportType.FUNNEL.value: ["stage", "enteredCount", "convertedCount", "dropoffCount", "conversionRate", "dropoffRate"],
++            ReportType.SALES_CONVERSION.value: ["visits", "orders", "payments", "salesAmount", "averageOrderValue", "paymentConversionRate"],
++            ReportType.OPERATION_EFFECT.value: ["metric", "value", "unit"],
++        }
++        return defaults.get(report_type, ["userId", "visits", "clicks", "cartAdds", "orders", "payments", "salesAmount"])
++
++    def _write_file(self, principal: Principal, report_type: str, csv_text: str) -> str:
++        self.storage_path.mkdir(parents=True, exist_ok=True)
++        timestamp = utcnow().strftime("%Y%m%d%H%M%S")
++        actor = self._safe_name(principal.actor_id)
++        file_name = f"{report_type}-{actor}-{timestamp}.csv"
++        (self.storage_path / file_name).write_text(csv_text, encoding="utf-8-sig")
++        return file_name
++
++    def _data_uri(self, csv_text: str) -> str:
++        encoded = base64.b64encode(csv_text.encode("utf-8-sig")).decode("ascii")
++        return f"data:text/csv;charset=utf-8;base64,{encoded}"
++
++    def _normalize_report_type(self, report_type: str) -> str:
++        known = {item.value for item in ReportType}
++        if report_type in known:
++            return report_type
++        return ReportType.OPERATION_EFFECT.value
++
++    def _safe_name(self, value: str) -> str:
++        return re.sub(r"[^a-zA-Z0-9_.-]+", "_", value).strip("._") or "export"
+diff --git a/backend/src/reports/report_service.py b/backend/src/reports/report_service.py
+index b31801b..8a33615 100644
+--- a/backend/src/reports/report_service.py
++++ b/backend/src/reports/report_service.py
+@@ -1,16 +1,100 @@
+ from __future__ import annotations
+ 
++import json
++
++from analytics.behavior_summary_service import BehaviorSummaryService
++from analytics.funnel_service import FunnelService
++from analytics.product_heat_service import ProductHeatService
+ from domain.common import utcnow
++from models.database import SessionLocal, use_mysql_persistence
++from models.reports import Report
++from sqlalchemy import select
+ 
+ 
+ class ReportService:
+-    def generate(self, report_type: str, filters: dict[str, object], items: list[object] | None = None) -> dict[str, object]:
+-        return {
++    def generate(
++        self,
++        report_type: str,
++        filters: dict[str, object],
++        items: list[object] | None = None,
++        created_by: str = "system",
++    ) -> dict[str, object]:
++        report = {
+             "reportId": f"{report_type}-{int(utcnow().timestamp())}",
+             "reportType": report_type,
+             "filters": filters,
+             "items": items or [],
++            "summary": self._summary(report_type, items or []),
+             "status": "ready",
+             "sensitiveDataState": "masked",
++            "algorithmVersion": "report-snapshot-v2",
+             "freshnessAt": utcnow().isoformat(),
+         }
++        self._save_report(report, created_by)
++        return report
++
++    def list_reports(self, report_type: str | None = None) -> list[dict[str, object]]:
++        if not use_mysql_persistence():
++            return []
++        statement = select(Report).order_by(Report.created_at.desc())
++        if report_type:
++            statement = statement.where(Report.report_type == report_type)
++        with SessionLocal() as session:
++            rows = session.scalars(statement).all()
++            return [self._row_to_dict(row) for row in rows]
++
++    def _save_report(self, report: dict[str, object], created_by: str) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        with SessionLocal() as session:
++            row = session.get(Report, str(report["reportId"]))
++            if row is None:
++                row = Report(
++                    report_id=str(report["reportId"]),
++                    report_type=str(report["reportType"]),
++                    filters=json.dumps(report["filters"], ensure_ascii=False, default=str),
++                    created_by=created_by,
++                    created_at=now,
++                    status=str(report["status"]),
++                    export_uri=None,
++                    sensitive_data_state=str(report["sensitiveDataState"]),
++                    freshness_at=now,
++                )
++                session.add(row)
++            session.commit()
++
++    def _row_to_dict(self, row: Report) -> dict[str, object]:
++        filters: dict[str, object] = {}
++        if row.filters:
++            loaded = json.loads(row.filters)
++            if isinstance(loaded, dict):
++                filters = loaded
++        return {
++            "reportId": row.report_id,
++            "reportType": row.report_type,
++            "filters": filters,
++            "items": [],
++            "summary": {},
++            "status": row.status,
++            "sensitiveDataState": row.sensitive_data_state,
++            "algorithmVersion": "report-snapshot-v2",
++            "freshnessAt": row.freshness_at.isoformat() if row.freshness_at else None,
++            "createdBy": row.created_by,
++            "createdAt": row.created_at.isoformat(),
++            "exportUri": row.export_uri,
++        }
++
++    def _summary(self, report_type: str, items: list[object]) -> dict[str, object]:
++        behavior_items = [item for item in items if hasattr(item, "event_type")]
++        if behavior_items:
++            return {
++                "behaviorSummary": BehaviorSummaryService().summarize(behavior_items)["metrics"],
++                "funnel": FunnelService().analyze(behavior_items)["stages"],
++                "topProducts": ProductHeatService().rank(behavior_items, "heat")["items"][:5],
++            }
++        return {
++            "reportType": report_type,
++            "itemCount": len(items),
++            "insight": "Report snapshot generated with masked sensitive fields.",
++        }
+diff --git a/backend/src/services/alert_rule_service.py b/backend/src/services/alert_rule_service.py
+index ecce1f0..39e041c 100644
+--- a/backend/src/services/alert_rule_service.py
++++ b/backend/src/services/alert_rule_service.py
+@@ -1,17 +1,136 @@
+ from __future__ import annotations
+ 
++from collections import Counter
++from statistics import mean, pstdev
++
+ from analytics.funnel_service import FunnelService
++from domain.common import utcnow
++from models.alerts_recommendations import Alert
++from models.database import SessionLocal, use_mysql_persistence
++from sqlalchemy import select
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+ 
+ class AlertRuleService:
+-    def evaluate(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++    def evaluate(self, events: list[BehaviorEventRecord] | None = None) -> list[dict[str, object]]:
++        if events is None:
++            return self.list_alerts()
++        return self.refresh_alerts(events)
++
++    def refresh_alerts(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
+         alerts: list[dict[str, object]] = []
+         invalid_count = sum(1 for event in events if event.idempotency_state.value in {"invalid", "quarantined"})
+         if invalid_count:
+-            alerts.append({"alertId": "behavior-data-anomaly", "alertType": "behavior_data_anomaly", "severity": "high", "status": "new", "triggerReason": f"{invalid_count} invalid behavior events"})
++            alerts.append({"alertId": "behavior-data-anomaly", "alertType": "behavior_data_anomaly", "severity": "high", "status": "new", "triggerReason": f"{invalid_count} invalid behavior events", "algorithmVersion": "retail-alert-v2"})
+         funnel = FunnelService().analyze(events)
+         for stage in funnel["stages"]:
+             if stage["dropoffRate"] > 80:
+-                alerts.append({"alertId": f"conversion-{stage['stage']}", "alertType": "conversion_anomaly", "severity": "medium", "status": "new", "triggerReason": f"{stage['stage']} dropoff above threshold"})
++                alerts.append({"alertId": f"conversion-{stage['stage']}", "alertType": "conversion_anomaly", "severity": "medium", "status": "new", "triggerReason": f"{stage['stage']} dropoff above threshold", "algorithmVersion": "retail-alert-v2"})
++        for alert in _product_conversion_alerts(events):
++            alerts.append(alert)
++        for alert in _channel_flow_alerts(events):
++            alerts.append(alert)
++        self._save_alerts(alerts)
+         return alerts
++
++    def list_alerts(self) -> list[dict[str, object]]:
++        if not use_mysql_persistence():
++            return []
++        with SessionLocal() as session:
++            rows = session.scalars(select(Alert).order_by(Alert.created_at.desc())).all()
++            return [self._row_to_dict(row) for row in rows]
++
++    def _save_alerts(self, alerts: list[dict[str, object]]) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        with SessionLocal() as session:
++            for item in alerts:
++                alert_id = str(item["alertId"])
++                row = session.get(Alert, alert_id)
++                if row is None:
++                    row = Alert(
++                        alert_id=alert_id,
++                        alert_type=str(item["alertType"]),
++                        severity=str(item["severity"]),
++                        status=str(item["status"]),
++                        scope_type=None,
++                        scope_id=None,
++                        trigger_reason=str(item["triggerReason"]),
++                        created_at=now,
++                        updated_at=now,
++                        resolved_at=None,
++                        owner_id=None,
++                    )
++                    session.add(row)
++                else:
++                    row.alert_type = str(item["alertType"])
++                    row.severity = str(item["severity"])
++                    row.trigger_reason = str(item["triggerReason"])
++                    row.updated_at = now
++            session.commit()
++
++    def _row_to_dict(self, row: Alert) -> dict[str, object]:
++        return {
++            "alertId": row.alert_id,
++            "alertType": row.alert_type,
++            "severity": row.severity,
++            "status": row.status,
++            "scopeType": row.scope_type,
++            "scopeId": row.scope_id,
++            "triggerReason": row.trigger_reason,
++            "algorithmVersion": "retail-alert-v2",
++            "createdAt": row.created_at.isoformat(),
++            "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
++        }
++
++
++def _product_conversion_alerts(events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++    browse_counts = Counter(event.product_id for event in events if event.product_id and event.event_type == "browse")
++    payment_counts = Counter(event.product_id for event in events if event.product_id and event.event_type == "payment_success")
++    rates = {
++        product_id: payment_counts[product_id] / browse_count
++        for product_id, browse_count in browse_counts.items()
++        if browse_count > 0
++    }
++    if len(rates) < 3:
++        return []
++    values = list(rates.values())
++    baseline = mean(values)
++    deviation = pstdev(values) or 0.01
++    alerts: list[dict[str, object]] = []
++    for product_id, rate in rates.items():
++        z_score = (rate - baseline) / deviation
++        if z_score <= -2 and browse_counts[product_id] >= 5:
++            alerts.append(
++                {
++                    "alertId": f"product-conversion-{product_id}",
++                    "alertType": "conversion_anomaly",
++                    "severity": "high",
++                    "status": "new",
++                    "triggerReason": f"{product_id} conversion rate is below product baseline",
++                    "algorithmVersion": "retail-alert-v2",
++                }
++            )
++    return alerts
++
++
++def _channel_flow_alerts(events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++    channel_counts = Counter(event.channel_id for event in events if event.channel_id)
++    if not channel_counts:
++        return []
++    total = sum(channel_counts.values())
++    alerts = []
++    for channel_id, count in channel_counts.items():
++        if total >= 20 and count / total < 0.02:
++            alerts.append(
++                {
++                    "alertId": f"channel-flow-{channel_id}",
++                    "alertType": "behavior_data_anomaly",
++                    "severity": "medium",
++                    "status": "new",
++                    "triggerReason": f"{channel_id} channel event flow is unusually low",
++                    "algorithmVersion": "retail-alert-v2",
++                }
++            )
++    return alerts
+diff --git a/backend/src/services/alert_workflow_service.py b/backend/src/services/alert_workflow_service.py
+index 89c4096..7325066 100644
+--- a/backend/src/services/alert_workflow_service.py
++++ b/backend/src/services/alert_workflow_service.py
+@@ -1,6 +1,9 @@
+ from __future__ import annotations
+ 
+ from domain.enums import AlertStatus
++from domain.common import utcnow
++from models.alerts_recommendations import Alert
++from models.database import SessionLocal, use_mysql_persistence
+ from security.audit import audit_recorder
+ from security.auth import Principal, assert_allowed
+ 
+@@ -15,9 +18,31 @@ ALLOWED_TRANSITIONS = {
+ class AlertWorkflowService:
+     def transition(self, principal: Principal, current: str, desired: str, alert_id: str) -> str:
+         assert_allowed(principal, "alert", "handle")
++        if use_mysql_persistence():
++            current = self._current_status(alert_id) or current
+         current_status = AlertStatus(current)
+         desired_status = AlertStatus(desired)
+         if desired_status not in ALLOWED_TRANSITIONS.get(current_status, set()):
+             raise ValueError(f"invalid alert transition {current}->{desired}")
++        self._save_status(alert_id, desired_status.value)
+         audit_recorder.log(principal, "alert_handling", "alert", alert_id)
+         return desired_status.value
++
++    def _current_status(self, alert_id: str) -> str | None:
++        with SessionLocal() as session:
++            row = session.get(Alert, alert_id)
++            return row.status if row is not None else None
++
++    def _save_status(self, alert_id: str, status: str) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        with SessionLocal() as session:
++            row = session.get(Alert, alert_id)
++            if row is None:
++                return
++            row.status = status
++            row.updated_at = now
++            if status in {AlertStatus.RESOLVED.value, AlertStatus.IGNORED.value}:
++                row.resolved_at = now
++            session.commit()
+diff --git a/backend/src/services/profile_service.py b/backend/src/services/profile_service.py
+index 49b5528..2d41ed0 100644
+--- a/backend/src/services/profile_service.py
++++ b/backend/src/services/profile_service.py
+@@ -1,23 +1,134 @@
+ from __future__ import annotations
+ 
+ from collections import Counter
++from datetime import datetime
++import json
+ 
+ from domain.common import utcnow
++from models.database import SessionLocal, use_mysql_persistence
++from models.profiles import UserProfile
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+ 
+ class ProfileService:
+-    def build_profile(self, user_id: str, events: list[BehaviorEventRecord]) -> dict[str, object]:
++    def build_profile(
++        self, user_id: str, events: list[BehaviorEventRecord] | None = None
++    ) -> dict[str, object]:
++        if events is None:
++            stored = self.get_profile(user_id)
++            if stored is not None:
++                return stored
++            events = []
++
+         user_events = [event for event in events if event.user_id == user_id]
+-        categories = Counter(event.product_id for event in user_events if event.product_id)
+-        activity = "high" if len(user_events) >= 5 else "medium" if user_events else "low"
+-        value = "high" if any(e.event_type == "payment_success" for e in user_events) else "medium"
+-        return {
++        categories = Counter(str(event.metadata.get("category") or event.product_id) for event in user_events if event.product_id)
++        paid_events = [event for event in user_events if event.event_type == "payment_success"]
++        paid_amount = sum(_event_amount(event) for event in paid_events)
++        recent_days = _days_since_latest(user_events)
++        activity_score = _activity_score(user_events, recent_days)
++        value_score = min(100, paid_amount / 20 + len(paid_events) * 15 + activity_score * 0.2)
++        price_values = [_event_amount(event) for event in user_events if _event_amount(event) > 0]
++        avg_price = sum(price_values) / len(price_values) if price_values else 0
++        activity = "high" if activity_score >= 70 else "medium" if activity_score >= 30 else "low"
++        value = "high" if paid_events or value_score >= 70 else "medium" if value_score >= 30 else "low"
++        price_sensitivity = "high" if avg_price and avg_price <= 150 else "medium" if avg_price <= 500 else "low"
++        profile = {
+             "userId": user_id,
+             "maskedUser": {"userId": user_id},
+             "consumptionLevel": value,
+             "interestTags": [key for key, _ in categories.most_common(5)],
+             "activityLevel": activity,
+             "valueGrade": value,
++            "rfm": {
++                "recencyDays": recent_days,
++                "frequency": len(user_events),
++                "monetary": round(paid_amount, 2),
++            },
++            "activityScore": round(activity_score, 2),
++            "valueScore": round(value_score, 2),
++            "priceSensitivity": price_sensitivity,
++            "algorithmVersion": "rfm-behavior-v2",
+             "updatedAt": utcnow().isoformat(),
+         }
++        self._save_profile(profile)
++        return profile
++
++    def get_profile(self, user_id: str) -> dict[str, object] | None:
++        if not use_mysql_persistence():
++            return None
++        with SessionLocal() as session:
++            row = session.get(UserProfile, f"profile-{user_id}")
++            return self._row_to_dict(row) if row is not None else None
++
++    def _save_profile(self, profile: dict[str, object]) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        user_id = str(profile["userId"])
++        with SessionLocal() as session:
++            row = session.get(UserProfile, f"profile-{user_id}")
++            if row is None:
++                row = UserProfile(
++                    profile_id=f"profile-{user_id}",
++                    user_id=user_id,
++                    basic_attribute_tags=None,
++                    consumption_level=str(profile["consumptionLevel"]),
++                    interest_tags=json.dumps(profile["interestTags"], ensure_ascii=False),
++                    activity_level=str(profile["activityLevel"]),
++                    value_grade=str(profile["valueGrade"]),
++                    basis_window="all_accepted_events",
++                    updated_at=now,
++                )
++                session.add(row)
++            else:
++                row.consumption_level = str(profile["consumptionLevel"])
++                row.interest_tags = json.dumps(profile["interestTags"], ensure_ascii=False)
++                row.activity_level = str(profile["activityLevel"])
++                row.value_grade = str(profile["valueGrade"])
++                row.basis_window = "all_accepted_events"
++                row.updated_at = now
++            session.commit()
++
++    def _row_to_dict(self, row: UserProfile) -> dict[str, object]:
++        interest_tags: list[str] = []
++        if row.interest_tags:
++            loaded = json.loads(row.interest_tags)
++            if isinstance(loaded, list):
++                interest_tags = [str(item) for item in loaded]
++        return {
++            "userId": row.user_id,
++            "maskedUser": {"userId": row.user_id},
++            "consumptionLevel": row.consumption_level,
++            "interestTags": interest_tags,
++            "activityLevel": row.activity_level,
++            "valueGrade": row.value_grade,
++            "algorithmVersion": "rfm-behavior-v2",
++            "updatedAt": row.updated_at.isoformat(),
++        }
++
++
++def _event_amount(event: BehaviorEventRecord) -> float:
++    value = event.metadata.get("amount", event.metadata.get("price", 0))
++    try:
++        return max(float(value), 0)
++    except (TypeError, ValueError):
++        return 0
++
++
++def _days_since_latest(events: list[BehaviorEventRecord]) -> int:
++    timestamps = [_timestamp(event.occurred_at) for event in events]
++    if not timestamps:
++        return 999
++    return max(int((utcnow().replace(tzinfo=None) - max(timestamps)).total_seconds() // 86400), 0)
++
++
++def _activity_score(events: list[BehaviorEventRecord], recency_days: int) -> float:
++    frequency_score = min(len(events) * 12, 75)
++    recency_score = max(25 - recency_days * 2, 0)
++    return min(frequency_score + recency_score, 100)
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/src/services/purchase_intent_service.py b/backend/src/services/purchase_intent_service.py
+index e7544b1..7f7d959 100644
+--- a/backend/src/services/purchase_intent_service.py
++++ b/backend/src/services/purchase_intent_service.py
+@@ -1,5 +1,12 @@
+ from __future__ import annotations
+ 
++from collections import Counter
++from datetime import datetime
++
++from domain.common import utcnow
++from models.database import SessionLocal, use_mysql_persistence
++from models.profiles import PurchaseIntent
++from sqlalchemy import select
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+ 
+@@ -9,12 +16,107 @@ class PurchaseIntentService:
+         has_payment = any(e.event_type == "payment_success" for e in user_events)
+         has_cart = any(e.event_type == "cart_add" for e in user_events)
+         browse_count = sum(1 for e in user_events if e.event_type == "browse")
++        favorite_count = sum(1 for e in user_events if e.event_type == "favorite")
++        click_count = sum(1 for e in user_events if e.event_type == "click")
++        repeated_product_count = max(Counter(event.product_id for event in user_events if event.product_id).values() or [0])
++        recent_days = _days_since_latest(user_events)
++        score = (
++            (30 if has_cart and not has_payment else 0)
++            + min(browse_count * 6, 24)
++            + min(click_count * 5, 15)
++            + min(favorite_count * 12, 24)
++            + min(repeated_product_count * 8, 24)
++            + (25 if has_payment else 0)
++            + max(20 - recent_days * 2, 0)
++        )
++        score = max(min(score, 100), 0)
+         if has_cart and not has_payment:
+-            level, score, basis = "cart_unpaid", 85, "cart added but payment not completed"
++            level, basis = "cart_unpaid", "cart added but payment not completed"
+         elif has_payment:
+-            level, score, basis = "high", 95, "recent payment behavior"
+-        elif browse_count >= 3:
+-            level, score, basis = "medium", 65, "repeated browse behavior"
++            level, basis = "high", "recent payment behavior"
++        elif score >= 80:
++            level, basis = "high", "high weighted behavior intent score"
++        elif score >= 50:
++            level, basis = "medium", "repeated browse, click, favorite, or product focus"
+         else:
+-            level, score, basis = "low", 30, "limited purchase signal"
+-        return {"userId": user_id, "intentLevel": level, "basis": basis, "score": score}
++            level, basis = "low", "limited purchase signal"
++        intent = {
++            "userId": user_id,
++            "intentLevel": level,
++            "basis": basis,
++            "score": round(score, 2),
++            "signals": {
++                "browseCount": browse_count,
++                "clickCount": click_count,
++                "favoriteCount": favorite_count,
++                "hasCartUnpaid": has_cart and not has_payment,
++                "repeatedProductCount": repeated_product_count,
++                "recencyDays": recent_days,
++            },
++            "algorithmVersion": "weighted-intent-v2",
++        }
++        self._save_intent(intent)
++        return intent
++
++    def list_intents(
++        self, events: list[BehaviorEventRecord] | None = None, user_id: str | None = None
++    ) -> list[dict[str, object]]:
++        if events is not None:
++            user_ids = [user_id] if user_id else sorted({event.user_id for event in events if event.user_id})
++            return [self.classify(current_user_id, events) for current_user_id in user_ids]
++        if not use_mysql_persistence():
++            return []
++        statement = select(PurchaseIntent).order_by(PurchaseIntent.updated_at.desc())
++        if user_id:
++            statement = statement.where(PurchaseIntent.user_id == user_id)
++        with SessionLocal() as session:
++            rows = session.scalars(statement).all()
++            return [self._row_to_dict(row) for row in rows]
++
++    def _save_intent(self, intent: dict[str, object]) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        user_id = str(intent["userId"])
++        with SessionLocal() as session:
++            row = session.get(PurchaseIntent, f"intent-{user_id}")
++            if row is None:
++                row = PurchaseIntent(
++                    intent_id=f"intent-{user_id}",
++                    user_id=user_id,
++                    intent_level=str(intent["intentLevel"]),
++                    related_product_id=None,
++                    basis=str(intent["basis"]),
++                    score=float(intent["score"]),
++                    updated_at=now,
++                )
++                session.add(row)
++            else:
++                row.intent_level = str(intent["intentLevel"])
++                row.basis = str(intent["basis"])
++                row.score = float(intent["score"])
++                row.updated_at = now
++            session.commit()
++
++    def _row_to_dict(self, row: PurchaseIntent) -> dict[str, object]:
++        return {
++            "userId": row.user_id,
++            "intentLevel": row.intent_level,
++            "basis": row.basis,
++            "score": float(row.score),
++            "algorithmVersion": "weighted-intent-v2",
++            "updatedAt": row.updated_at.isoformat(),
++        }
++
++
++def _days_since_latest(events: list[BehaviorEventRecord]) -> int:
++    timestamps = [_timestamp(event.occurred_at) for event in events]
++    if not timestamps:
++        return 999
++    return max(int((utcnow().replace(tzinfo=None) - max(timestamps)).total_seconds() // 86400), 0)
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/src/services/recommendation_service.py b/backend/src/services/recommendation_service.py
+index ab33abf..5563b12 100644
+--- a/backend/src/services/recommendation_service.py
++++ b/backend/src/services/recommendation_service.py
+@@ -1,15 +1,56 @@
+ from __future__ import annotations
+ 
+-from collections import Counter
++from collections import Counter, defaultdict
++from datetime import datetime
++from math import exp
+ 
++from domain.common import utcnow
++from models.alerts_recommendations import RecommendationInsight
++from models.database import SessionLocal, use_mysql_persistence
++from sqlalchemy import delete, select
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+ 
+ class RecommendationService:
+-    def recommend(self, target_id: str, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++    def recommend(
++        self, target_id: str, events: list[BehaviorEventRecord] | None = None
++    ) -> list[dict[str, object]]:
++        if events is None:
++            stored = self.list_recommendations(target_id)
++            if stored:
++                return stored
++            events = []
++
++        user_events = [event for event in events if target_id == "all" or event.user_id == target_id]
++        category_pref = _category_preferences(user_events)
+         product_counts = Counter(event.product_id for event in events if event.product_id)
++        purchased = {event.product_id for event in user_events if event.event_type == "payment_success" and event.product_id}
++        product_meta = _product_metadata(events)
+         recommendations = []
+-        for idx, (product_id, count) in enumerate(product_counts.most_common(5), start=1):
++        scored_products = []
++        for product_id, count in product_counts.items():
++            meta = product_meta.get(product_id, {})
++            category = str(meta.get("category") or product_id)
++            category_score = min(category_pref.get(category, 0) * 6, 30)
++            collaborative_score = min(count * 3, 25)
++            heat_score = min(_recent_heat(product_id, events), 20)
++            price_score = _price_match_score(user_events, meta)
++            novelty_score = 10 if product_id not in purchased else -20
++            score = max(min(category_score + collaborative_score + heat_score + price_score + novelty_score, 100), 0)
++            scored_products.append((product_id, score, category_score, collaborative_score, heat_score, price_score, novelty_score))
++        scored_products.sort(key=lambda item: item[1], reverse=True)
++        for idx, (product_id, score, category_score, collaborative_score, heat_score, price_score, novelty_score) in enumerate(scored_products[:5], start=1):
++            reasons = []
++            if category_score:
++                reasons.append("user category preference matched")
++            if collaborative_score:
++                reasons.append("popular among similar recent behavior")
++            if heat_score:
++                reasons.append("recent product heat is strong")
++            if price_score:
++                reasons.append("price band matches user history")
++            if novelty_score > 0:
++                reasons.append("not purchased by this user")
+             recommendations.append(
+                 {
+                     "insightId": f"rec-{target_id}-{idx}",
+@@ -17,9 +58,121 @@ class RecommendationService:
+                     "targetId": target_id,
+                     "productId": product_id,
+                     "basisType": "browse_history",
+-                    "reason": "popular among recent behavior records",
+-                    "priority": "high" if idx == 1 else "medium",
+-                    "score": max(100 - idx * 10, 10),
++                    "reason": "; ".join(reasons) or "composite retail behavior score",
++                    "priority": "high" if score >= 75 else "medium" if score >= 45 else "low",
++                    "score": round(score, 2),
++                    "scoreBreakdown": {
++                        "category": round(category_score, 2),
++                        "collaborative": round(collaborative_score, 2),
++                        "heat": round(heat_score, 2),
++                        "price": round(price_score, 2),
++                        "novelty": round(novelty_score, 2),
++                    },
++                    "algorithmVersion": "hybrid-retail-v2",
+                 }
+             )
++        self._save_recommendations(target_id, recommendations)
+         return recommendations
++
++    def list_recommendations(self, target_id: str) -> list[dict[str, object]]:
++        if not use_mysql_persistence():
++            return []
++        with SessionLocal() as session:
++            rows = session.scalars(
++                select(RecommendationInsight)
++                .where(RecommendationInsight.target_id == target_id)
++                .order_by(RecommendationInsight.score.desc(), RecommendationInsight.generated_at.desc())
++            ).all()
++            return [self._row_to_dict(row) for row in rows]
++
++    def _save_recommendations(
++        self, target_id: str, recommendations: list[dict[str, object]]
++    ) -> None:
++        if not use_mysql_persistence():
++            return
++        now = utcnow().replace(tzinfo=None)
++        with SessionLocal() as session:
++            session.execute(
++                delete(RecommendationInsight).where(RecommendationInsight.target_id == target_id)
++            )
++            for item in recommendations:
++                session.add(
++                    RecommendationInsight(
++                        insight_id=str(item["insightId"]),
++                        target_type=str(item["targetType"]),
++                        target_id=str(item["targetId"]),
++                        product_id=str(item["productId"]),
++                        basis_type=str(item["basisType"]),
++                        reason=str(item["reason"]),
++                        priority=str(item["priority"]),
++                        score=float(item["score"]),
++                        generated_at=now,
++                    )
++                )
++            session.commit()
++
++    def _row_to_dict(self, row: RecommendationInsight) -> dict[str, object]:
++        return {
++            "insightId": row.insight_id,
++            "targetType": row.target_type,
++            "targetId": row.target_id,
++            "productId": row.product_id,
++            "basisType": row.basis_type,
++            "reason": row.reason,
++            "priority": row.priority,
++            "score": float(row.score),
++            "algorithmVersion": "hybrid-retail-v2",
++            "generatedAt": row.generated_at.isoformat(),
++        }
++
++
++def _category_preferences(events: list[BehaviorEventRecord]) -> dict[str, float]:
++    weights = {"browse": 1, "click": 2, "favorite": 4, "cart_add": 6, "payment_success": 8}
++    preferences: dict[str, float] = defaultdict(float)
++    for event in events:
++        category = event.metadata.get("category") or event.product_id
++        if not category:
++            continue
++        preferences[str(category)] += weights.get(event.event_type, 0)
++    return preferences
++
++
++def _product_metadata(events: list[BehaviorEventRecord]) -> dict[str, dict[str, object]]:
++    metadata: dict[str, dict[str, object]] = {}
++    for event in events:
++        if not event.product_id:
++            continue
++        metadata.setdefault(event.product_id, {}).update(event.metadata)
++    return metadata
++
++
++def _recent_heat(product_id: str, events: list[BehaviorEventRecord]) -> float:
++    weights = {"browse": 1, "click": 2, "favorite": 3, "cart_add": 5, "payment_success": 8}
++    now = utcnow().replace(tzinfo=None)
++    score = 0.0
++    for event in events:
++        if event.product_id != product_id:
++            continue
++        occurred_at = event.occurred_at.replace(tzinfo=None) if isinstance(event.occurred_at, datetime) else now
++        age_days = max((now - occurred_at).total_seconds() / 86400, 0)
++        score += weights.get(event.event_type, 0) * exp(-age_days / 14)
++    return score
++
++
++def _price_match_score(events: list[BehaviorEventRecord], metadata: dict[str, object]) -> float:
++    prices = [_event_price(event.metadata) for event in events if _event_price(event.metadata) > 0]
++    price = _event_price(metadata)
++    if not prices or price <= 0:
++        return 0
++    avg_price = sum(prices) / len(prices)
++    if avg_price <= 0:
++        return 0
++    distance = abs(price - avg_price) / avg_price
++    return max(10 * (1 - min(distance, 1)), 0)
++
++
++def _event_price(metadata: dict[str, object]) -> float:
++    try:
++        return max(float(metadata.get("price", metadata.get("amount", 0))), 0)
++    except (TypeError, ValueError):
++        return 0
+diff --git a/backend/src/services/segment_service.py b/backend/src/services/segment_service.py
+index 2f6afda..8701d64 100644
+--- a/backend/src/services/segment_service.py
++++ b/backend/src/services/segment_service.py
+@@ -1,20 +1,189 @@
+ from __future__ import annotations
+ 
++from collections import defaultdict
++from datetime import datetime
++
++from domain.common import utcnow
++from models.database import SessionLocal, use_mysql_persistence
++from models.profiles import UserSegment, UserSegmentMembership
++from sqlalchemy import delete, select
+ from services.behavior_event_repository import BehaviorEventRecord
+ 
+ 
+ class SegmentService:
++    SEGMENTS = {
++        "high_value": ("High Value", "paid users"),
++        "potential": ("Potential", "cart behavior without payment"),
++        "new_user": ("New User", "limited observed behavior"),
++        "silent": ("Silent", "no recent behavior"),
++        "price_sensitive": ("Price Sensitive", "low price preference"),
++        "churn_risk": ("Churn Risk", "historical activity with no recent payment"),
++    }
++
+     def classify(self, user_id: str, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
+         user_events = [event for event in events if event.user_id == user_id]
+-        paid = any(event.event_type == "payment_success" for event in user_events)
++        paid_events = [event for event in user_events if event.event_type == "payment_success"]
++        paid = bool(paid_events)
+         cart = any(event.event_type == "cart_add" for event in user_events)
++        paid_amount = sum(_event_amount(event) for event in paid_events)
++        recent_days = _days_since_latest(user_events)
++        low_price_ratio = _low_price_ratio(user_events)
+         segments = []
+         if paid:
+-            segments.append({"segmentType": "high_value", "reason": "successful payment behavior", "score": 90})
++            score = 90 if paid_amount >= 1000 or len(paid_events) >= 3 else 75
++            segments.append({"segmentType": "high_value", "reason": "successful payment and value signal", "score": score})
+         if cart and not paid:
+             segments.append({"segmentType": "potential", "reason": "cart behavior without payment", "score": 70})
+         if len(user_events) <= 1:
+             segments.append({"segmentType": "new_user", "reason": "limited observed behavior", "score": 60})
+-        if not user_events:
++        if not user_events or recent_days >= 30:
+             segments.append({"segmentType": "silent", "reason": "no recent behavior", "score": 50})
++        if low_price_ratio >= 0.5:
++            segments.append({"segmentType": "price_sensitive", "reason": "low price product interest", "score": 65})
++        if len(user_events) >= 3 and (not paid or recent_days >= 14):
++            segments.append({"segmentType": "churn_risk", "reason": "activity dropped or no successful recent payment", "score": 55})
+         return segments
++
++    def refresh_segments(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        user_ids = sorted({event.user_id for event in events if event.user_id})
++        memberships: list[dict[str, object]] = []
++        for user_id in user_ids:
++            for segment in self.classify(user_id, events):
++                memberships.append({"userId": user_id, **segment})
++
++        if use_mysql_persistence():
++            self._save_segments(memberships)
++        return self.list_segments(events)
++
++    def list_segments(self, events: list[BehaviorEventRecord] | None = None) -> list[dict[str, object]]:
++        if use_mysql_persistence():
++            with SessionLocal() as session:
++                rows = session.scalars(select(UserSegment).order_by(UserSegment.segment_id)).all()
++                if rows:
++                    return [self._segment_to_dict(row) for row in rows]
++        if events is not None:
++            return self.refresh_segments(events) if use_mysql_persistence() else self._summarize(events)
++        return []
++
++    def list_segment_users(
++        self, segment_id: str, events: list[BehaviorEventRecord] | None = None
++    ) -> list[dict[str, object]]:
++        if use_mysql_persistence():
++            with SessionLocal() as session:
++                rows = session.scalars(
++                    select(UserSegmentMembership)
++                    .where(
++                        UserSegmentMembership.segment_id == segment_id,
++                        UserSegmentMembership.left_at.is_(None),
++                    )
++                    .order_by(UserSegmentMembership.user_id)
++                ).all()
++                if rows:
++                    return [
++                        {
++                            "userId": row.user_id,
++                            "segmentId": row.segment_id,
++                            "reason": row.reason,
++                            "score": float(row.score or 0),
++                        }
++                        for row in rows
++                    ]
++        if events is None:
++            return []
++        return [
++            {"userId": user_id, "segmentId": segment_id, "reason": item["reason"], "score": item["score"]}
++            for user_id in sorted({event.user_id for event in events if event.user_id})
++            for item in self.classify(user_id, events)
++            if item["segmentType"] == segment_id
++        ]
++
++    def _summarize(self, events: list[BehaviorEventRecord]) -> list[dict[str, object]]:
++        counts: dict[str, int] = defaultdict(int)
++        for user_id in sorted({event.user_id for event in events if event.user_id}):
++            for segment in self.classify(user_id, events):
++                counts[str(segment["segmentType"])] += 1
++        return [
++            {
++                "segmentId": segment_id,
++                "segmentType": segment_id,
++                "name": self.SEGMENTS[segment_id][0],
++                "memberCount": counts.get(segment_id, 0),
++                "ruleDescription": self.SEGMENTS[segment_id][1],
++            }
++            for segment_id in self.SEGMENTS
++        ]
++
++    def _save_segments(self, memberships: list[dict[str, object]]) -> None:
++        now = utcnow().replace(tzinfo=None)
++        counts: dict[str, int] = defaultdict(int)
++        for membership in memberships:
++            counts[str(membership["segmentType"])] += 1
++        with SessionLocal() as session:
++            session.execute(delete(UserSegmentMembership))
++            for segment_id, (name, rule) in self.SEGMENTS.items():
++                row = session.get(UserSegment, segment_id)
++                if row is None:
++                    row = UserSegment(
++                        segment_id=segment_id,
++                        segment_type=segment_id,
++                        name=name,
++                        description=rule,
++                        rule_description=rule,
++                        member_count=counts.get(segment_id, 0),
++                        last_calculated_at=now,
++                    )
++                    session.add(row)
++                else:
++                    row.member_count = counts.get(segment_id, 0)
++                    row.last_calculated_at = now
++            for membership in memberships:
++                segment_type = str(membership["segmentType"])
++                session.add(
++                    UserSegmentMembership(
++                        segment_id=segment_type,
++                        user_id=str(membership["userId"]),
++                        joined_at=now,
++                        left_at=None,
++                        reason=str(membership["reason"]),
++                        score=float(membership["score"]),
++                    )
++                )
++            session.commit()
++
++    def _segment_to_dict(self, row: UserSegment) -> dict[str, object]:
++        return {
++            "segmentId": row.segment_id,
++            "segmentType": row.segment_type,
++            "name": row.name,
++            "memberCount": row.member_count,
++            "ruleDescription": row.rule_description,
++            "lastCalculatedAt": row.last_calculated_at.isoformat(),
++        }
++
++
++def _event_amount(event: BehaviorEventRecord) -> float:
++    value = event.metadata.get("amount", event.metadata.get("price", 0))
++    try:
++        return max(float(value), 0)
++    except (TypeError, ValueError):
++        return 0
++
++
++def _low_price_ratio(events: list[BehaviorEventRecord]) -> float:
++    prices = [_event_amount(event) for event in events if _event_amount(event) > 0]
++    if not prices:
++        return 0
++    return sum(1 for price in prices if price <= 150) / len(prices)
++
++
++def _days_since_latest(events: list[BehaviorEventRecord]) -> int:
++    timestamps = [_timestamp(event.occurred_at) for event in events]
++    if not timestamps:
++        return 999
++    return max(int((utcnow().replace(tzinfo=None) - max(timestamps)).total_seconds() // 86400), 0)
++
++
++def _timestamp(value: object) -> datetime:
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None)
++    return datetime.min
+diff --git a/backend/tests/integration/test_report_export_security.py b/backend/tests/integration/test_report_export_security.py
+index 7c85687..3d799f5 100644
+--- a/backend/tests/integration/test_report_export_security.py
++++ b/backend/tests/integration/test_report_export_security.py
+@@ -2,11 +2,45 @@ from __future__ import annotations
+ 
+ import pytest
+ 
++from domain.common import utcnow
+ from domain.enums import DataScope, Role
+ from reports.export_service import ExportService
+ from security.auth import PermissionDenied, Principal
++from services.behavior_event_repository import BehaviorEventRecord, InMemoryBehaviorEventRepository
+ 
+ 
+ def test_export_denies_read_only_user() -> None:
+     with pytest.raises(PermissionDenied):
+         ExportService().create_export(Principal("viewer", Role.READ_ONLY_VIEWER, DataScope.NONE), "behavior_detail", {})
++
++
++def test_export_creates_ready_csv_file(tmp_path) -> None:
++    repo = InMemoryBehaviorEventRepository()
++    repo.ingest(
++        BehaviorEventRecord(
++            event_id="evt-export-1",
++            source_system="web",
++            event_type="payment_success",
++            session_id="session-export-123",
++            channel_id="search",
++            occurred_at=utcnow(),
++            user_id="user-export-123",
++            product_id="SKU-001",
++            order_id="order-export-123",
++            payment_id="payment-export-123",
++            metadata={"price": 199.0},
++        )
++    )
++
++    result = ExportService(repo=repo, storage_path=tmp_path).create_export(
++        Principal("analyst", Role.ANALYST, DataScope.ALL),
++        "behavior_detail",
++        {"channelId": "search"},
++    )
++
++    exported_file = tmp_path / str(result["fileName"])
++    csv_text = exported_file.read_text(encoding="utf-8-sig")
++    assert result["status"] == "ready"
++    assert str(result["exportUri"]).startswith("data:text/csv")
++    assert "evt-export-1" in csv_text
++    assert "us***-123" in csv_text
+diff --git a/docker-compose.yml b/docker-compose.yml
+index a7f4536..f0c7cd5 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -4,8 +4,8 @@ services:
+     environment:
+       MYSQL_DATABASE: retail_behavior
+       MYSQL_USER: retail
+-      MYSQL_PASSWORD: retail
+-      MYSQL_ROOT_PASSWORD: retail_root
++      MYSQL_PASSWORD: "2112"
++      MYSQL_ROOT_PASSWORD: "2112"
+     ports:
+       - "3306:3306"
+     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+@@ -20,7 +20,10 @@ services:
+   backend:
+     build:
+       context: ./backend
+-    env_file: .env.example
++    env_file: .env
++    environment:
++      DATABASE_URL: mysql+pymysql://retail:2112@mysql:3306/retail_behavior
++      REDIS_URL: redis://redis:6379/0
+     ports:
+       - "8000:8000"
+     depends_on:
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 1c06b1c..e060689 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -70,6 +70,12 @@ interface SummaryResponse {
+   freshnessAt: string;
+ }
+ 
++interface ExportResponse {
++  exportUri?: string;
++  fileName?: string;
++  status?: string;
++}
++
+ interface FunnelResponse {
+   stages: Array<{ stage: string; enteredCount: number; convertedCount: number; dropoffCount: number; conversionRate: number; dropoffRate: number }>;
+   biggestDropoffStage: string;
+@@ -373,7 +379,7 @@ const pieColors = ["#206a5d", "#5887d8", "#b36b18", "#8d62c4", "#c7534a", "#4891
+ 
+ const products = generateProducts();
+ const productById = new Map(products.map((product) => [product.id, product]));
+-const fallbackReports = ["用户行为明细", "商品分析报表", "转化漏斗报表", "用户画像报表", "用户分群报表", "销售转化报表", "运营效果报表"];
++const fallbackReports = ["behavior_detail", "product_analysis", "funnel", "user_profile", "user_segment", "sales_conversion", "operation_effect"];
+ 
+ function App() {
+   const [loginId, setLoginId] = useState("ops001");
+@@ -1010,22 +1016,50 @@ function RecommendationView({ recommendations }: { recommendations: Recommendati
+ }
+ 
+ function ReportView({ reports, canExport }: { reports: Array<Record<string, unknown>>; canExport: boolean }) {
++  const [exporting, setExporting] = useState("");
++  const [exportMessage, setExportMessage] = useState("");
+   const names = reports.length ? reports.map((report) => String(report.reportType ?? "operation_effect")) : fallbackReports;
++  const exportReport = async (report: string) => {
++    if (!canExport || exporting) return;
++    setExporting(report);
++    setExportMessage("");
++    try {
++      const result = (await reportApi.exportReport(report, {})) as ExportResponse;
++      if (!result.exportUri) throw new Error("导出文件尚未生成，请稍后重试。");
++      downloadExport(result.exportUri, result.fileName ?? `${report}.csv`);
++      setExportMessage(`${reportLabel(report)} 已生成并开始下载。`);
++    } catch (error) {
++      setExportMessage(error instanceof Error ? error.message : "报表导出失败。");
++    } finally {
++      setExporting("");
++    }
++  };
++
+   return (
+     <section className="panel full-span">
+       <PanelTitle title="报表统计" meta="按权限导出，敏感字段默认脱敏" />
+       <div className="report-grid">
+         {names.map((report) => (
+-          <button type="button" className="report-tile" key={report} disabled={!canExport}>
++          <button type="button" className="report-tile" key={report} disabled={!canExport || exporting === report} onClick={() => void exportReport(report)}>
+             <strong>{reportLabel(report)}</strong>
+-            <span>{canExport ? "导出报表" : "只读查看"}</span>
++            <span>{exporting === report ? "正在生成" : canExport ? "导出 CSV" : "只读查看"}</span>
+           </button>
+         ))}
+       </div>
++      {exportMessage && <div className="notice">{exportMessage}</div>}
+     </section>
+   );
+ }
+ 
++function downloadExport(uri: string, fileName: string) {
++  const link = document.createElement("a");
++  link.href = uri;
++  link.download = fileName;
++  document.body.appendChild(link);
++  link.click();
++  link.remove();
++}
++
+ function AuditView({ rows }: { rows: Array<Record<string, unknown>> }) {
+   return (
+     <section className="panel full-span">
+@@ -1316,8 +1350,9 @@ function generateProducts() {
+     const name = catalog.names[categoryIndex % catalog.names.length];
+     const brand = catalog.brands[(categoryIndex + Math.floor(categoryIndex / 3)) % catalog.brands.length];
+     const price = catalog.min + ((i * 73) % (catalog.max - catalog.min + 1));
++    const id = `SKU-${String(i + 1).padStart(3, "0")}`;
+     result.push({
+-      id: `SKU-${String(i + 1).padStart(3, "0")}`,
++      id,
+       name: `${name} ${String(i + 1).padStart(2, "0")}`,
+       brand,
+       category: catalog.category,
+@@ -1328,7 +1363,7 @@ function generateProducts() {
+       tag: ["高意向", "热卖", "新品", "复购高", "加购高"][i % 5],
+       description: catalog.desc,
+       recommendation: `${catalog.category}类目与当前用户近期浏览、收藏或购买行为相似，价格位于该用户常看区间。`,
+-      image: catalog.image,
++      image: `/assets/products/generated/${id}.png`,
+     });
+   }
+   return result;

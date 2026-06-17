@@ -1,0 +1,1053 @@
+openapi: 3.1.0
+info:
+  title: Retail Behavior Analytics API
+  version: 0.1.0
+  description: Contract for behavior ingestion, analytics, journeys, reports, alerts, profiles, segments, recommendations, purchase intent, permissions, and audit.
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+paths:
+  /events/behavior:
+    post:
+      summary: Ingest behavior events
+      operationId: ingestBehaviorEvents
+      tags: [Behavior Events]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BehaviorEventBatchRequest'
+      responses:
+        '202':
+          description: Events accepted for validation and metric refresh
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /behavior/events:
+    get:
+      summary: Query behavior event details
+      operationId: listBehaviorEvents
+      tags: [Behavior Events]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/VisitorId'
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/EventType'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Filtered behavior event details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BehaviorEventPage'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /behavior/journeys/{subjectId}:
+    get:
+      summary: Query a user or visitor journey
+      operationId: getBehaviorJourney
+      tags: [Journeys]
+      parameters:
+        - name: subjectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: subjectType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [user, visitor]
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+      responses:
+        '200':
+          description: Chronological behavior journey
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Journey'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /analytics/behavior-summary:
+    get:
+      summary: Query behavior summary metrics
+      operationId: getBehaviorSummary
+      tags: [Analytics]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/SegmentId'
+      responses:
+        '200':
+          description: Behavior summary with freshness and metric definitions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BehaviorSummary'
+  /analytics/funnel:
+    get:
+      summary: Query conversion funnel analysis
+      operationId: getFunnelAnalysis
+      tags: [Analytics]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/SegmentId'
+      responses:
+        '200':
+          description: Funnel stages and drop-off analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FunnelAnalysis'
+  /analytics/product-heat:
+    get:
+      summary: Query product heat rankings
+      operationId: getProductHeat
+      tags: [Analytics]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/ChannelId'
+        - name: rankBy
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [browse, click, cart_add, favorite, purchase, conversion_rate]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Product ranking results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductHeatPage'
+  /profiles/{userId}:
+    get:
+      summary: Get a user profile
+      operationId: getUserProfile
+      tags: [Profiles]
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: Masked user profile response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /segments:
+    get:
+      summary: List user segments
+      operationId: listSegments
+      tags: [Segments]
+      responses:
+        '200':
+          description: Available user segments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSegment'
+  /segments/{segmentId}/users:
+    get:
+      summary: List users in a segment
+      operationId: listSegmentUsers
+      tags: [Segments]
+      parameters:
+        - $ref: '#/components/parameters/SegmentIdPath'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Segment members with masked user fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SegmentMemberPage'
+  /alerts:
+    get:
+      summary: List user and data alerts
+      operationId: listAlerts
+      tags: [Alerts]
+      parameters:
+        - name: alertType
+          in: query
+          schema:
+            $ref: '#/components/schemas/AlertType'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AlertStatus'
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+      responses:
+        '200':
+          description: Alert list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+  /alerts/{alertId}:
+    patch:
+      summary: Update alert status
+      operationId: updateAlertStatus
+      tags: [Alerts]
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertUpdateRequest'
+      responses:
+        '200':
+          description: Updated alert
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /recommendations/analysis:
+    get:
+      summary: Query recommendation analysis
+      operationId: listRecommendationInsights
+      tags: [Recommendations]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/SegmentId'
+        - name: basisType
+          in: query
+          schema:
+            type: string
+            enum: [browse_history, purchase_history, similar_users, user_profile]
+      responses:
+        '200':
+          description: Recommendation insights
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecommendationInsight'
+  /ai/preference-categories:
+    get:
+      summary: Classify user purchase category preferences with pretrained embeddings
+      operationId: classifyAIPreferenceCategories
+      tags: [AI Preferences]
+      parameters:
+        - name: target_id
+          in: query
+          schema:
+            type: string
+            default: all
+        - name: top_n
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        '200':
+          description: AI-generated category preference classifications
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIPreferenceResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /purchase-intent/users:
+    get:
+      summary: Query purchase intent users
+      operationId: listPurchaseIntentUsers
+      tags: [Purchase Intent]
+      parameters:
+        - name: intentLevel
+          in: query
+          schema:
+            type: string
+            enum: [high, medium, low, cart_unpaid]
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Purchase-intent user list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseIntentPage'
+  /reports:
+    get:
+      summary: List generated reports
+      operationId: listReports
+      tags: [Reports]
+      parameters:
+        - name: reportType
+          in: query
+          schema:
+            $ref: '#/components/schemas/ReportType'
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+      responses:
+        '200':
+          description: Reports visible to the caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Report'
+  /reports/{reportType}/exports:
+    post:
+      summary: Create an authorized report export
+      operationId: createReportExport
+      tags: [Reports]
+      parameters:
+        - name: reportType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ReportType'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportExportRequest'
+      responses:
+        '202':
+          description: Export queued or ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /audit-logs:
+    get:
+      summary: Query audit logs
+      operationId: listAuditLogs
+      tags: [Audit]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - name: action
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit records visible to authorized administrators
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    StartTime:
+      name: startTime
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    EndTime:
+      name: endTime
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    ProductId:
+      name: productId
+      in: query
+      schema:
+        type: string
+    UserId:
+      name: userId
+      in: query
+      schema:
+        type: string
+    VisitorId:
+      name: visitorId
+      in: query
+      schema:
+        type: string
+    SessionId:
+      name: sessionId
+      in: query
+      schema:
+        type: string
+    ChannelId:
+      name: channelId
+      in: query
+      schema:
+        type: string
+    SegmentId:
+      name: segmentId
+      in: query
+      schema:
+        type: string
+    EventType:
+      name: eventType
+      in: query
+      schema:
+        $ref: '#/components/schemas/EventType'
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    UserIdPath:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+    SegmentIdPath:
+      name: segmentId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Caller is not allowed to access this resource or data scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    EventType:
+      type: string
+      enum: [browse, click, search, favorite, cart_add, order_submit, payment_attempt, payment_success]
+    IdempotencyState:
+      type: string
+      enum: [accepted, duplicate, invalid, delayed, quarantined]
+    BehaviorEventInput:
+      type: object
+      required: [eventId, sourceSystem, eventType, sessionId, channelId, occurredAt]
+      properties:
+        eventId:
+          type: string
+        sourceSystem:
+          type: string
+        eventType:
+          $ref: '#/components/schemas/EventType'
+        userId:
+          type: string
+        visitorId:
+          type: string
+        sessionId:
+          type: string
+        productId:
+          type: string
+        orderId:
+          type: string
+        paymentId:
+          type: string
+        channelId:
+          type: string
+        searchKeyword:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+    BehaviorEventBatchRequest:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/BehaviorEventInput'
+    IngestionResult:
+      type: object
+      required: [acceptedCount, duplicateCount, invalidCount, delayedCount, quarantinedCount, results]
+      properties:
+        acceptedCount:
+          type: integer
+          minimum: 0
+        duplicateCount:
+          type: integer
+          minimum: 0
+        invalidCount:
+          type: integer
+          minimum: 0
+        delayedCount:
+          type: integer
+          minimum: 0
+        quarantinedCount:
+          type: integer
+          minimum: 0
+        results:
+          type: array
+          items:
+            type: object
+            required: [eventId, state]
+            properties:
+              eventId:
+                type: string
+              state:
+                $ref: '#/components/schemas/IdempotencyState'
+              reason:
+                type: string
+    BehaviorEvent:
+      allOf:
+        - $ref: '#/components/schemas/BehaviorEventInput'
+        - type: object
+          required: [receivedAt, idempotencyState]
+          properties:
+            receivedAt:
+              type: string
+              format: date-time
+            idempotencyState:
+              $ref: '#/components/schemas/IdempotencyState'
+            exclusionReason:
+              type: string
+    BehaviorEventPage:
+      type: object
+      required: [items, page, pageSize, total, freshnessAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BehaviorEvent'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+          minimum: 0
+        freshnessAt:
+          type: string
+          format: date-time
+    Journey:
+      type: object
+      required: [subjectId, subjectType, events, freshnessAt]
+      properties:
+        subjectId:
+          type: string
+        subjectType:
+          type: string
+          enum: [user, visitor]
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/BehaviorEvent'
+        freshnessAt:
+          type: string
+          format: date-time
+    Metric:
+      type: object
+      required: [key, name, value, unit, metricVersion, freshnessAt, validationState]
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        value:
+          type: number
+        unit:
+          type: string
+          enum: [count, amount, percent, seconds, rank]
+        metricVersion:
+          type: string
+        freshnessAt:
+          type: string
+          format: date-time
+        validationState:
+          type: string
+          enum: [valid, quarantined, superseded]
+    BehaviorSummary:
+      type: object
+      required: [metrics, filters, freshnessAt]
+      properties:
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/Metric'
+        filters:
+          type: object
+          additionalProperties: true
+        freshnessAt:
+          type: string
+          format: date-time
+    FunnelStage:
+      type: object
+      required: [stage, enteredCount, convertedCount, dropoffCount, conversionRate, dropoffRate]
+      properties:
+        stage:
+          type: string
+          enum: [browse, click, cart, order, payment]
+        enteredCount:
+          type: integer
+          minimum: 0
+        convertedCount:
+          type: integer
+          minimum: 0
+        dropoffCount:
+          type: integer
+          minimum: 0
+        conversionRate:
+          type: number
+          minimum: 0
+          maximum: 100
+        dropoffRate:
+          type: number
+          minimum: 0
+          maximum: 100
+    FunnelAnalysis:
+      type: object
+      required: [stages, biggestDropoffStage, freshnessAt]
+      properties:
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/FunnelStage'
+        biggestDropoffStage:
+          type: string
+        freshnessAt:
+          type: string
+          format: date-time
+    ProductHeat:
+      type: object
+      required: [productId, productName, rank, value, unit, conversionRate]
+      properties:
+        productId:
+          type: string
+        productName:
+          type: string
+        rank:
+          type: integer
+          minimum: 1
+        value:
+          type: number
+          minimum: 0
+        unit:
+          type: string
+        conversionRate:
+          type: number
+          minimum: 0
+          maximum: 100
+    ProductHeatPage:
+      type: object
+      required: [items, page, pageSize, total, freshnessAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductHeat'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        freshnessAt:
+          type: string
+          format: date-time
+    UserProfile:
+      type: object
+      required: [userId, maskedUser, consumptionLevel, interestTags, activityLevel, valueGrade, updatedAt]
+      properties:
+        userId:
+          type: string
+        maskedUser:
+          type: object
+          additionalProperties: true
+        consumptionLevel:
+          type: string
+          enum: [low, medium, high, very_high]
+        interestTags:
+          type: array
+          items:
+            type: string
+        activityLevel:
+          type: string
+          enum: [low, medium, high]
+        valueGrade:
+          type: string
+          enum: [low, medium, high, strategic]
+        updatedAt:
+          type: string
+          format: date-time
+    UserSegment:
+      type: object
+      required: [segmentId, segmentType, name, memberCount, lastCalculatedAt]
+      properties:
+        segmentId:
+          type: string
+        segmentType:
+          type: string
+          enum: [high_value, potential, new_user, price_sensitive, silent, churn_risk]
+        name:
+          type: string
+        memberCount:
+          type: integer
+          minimum: 0
+        ruleDescription:
+          type: string
+        lastCalculatedAt:
+          type: string
+          format: date-time
+    SegmentMemberPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              userId:
+                type: string
+              maskedUser:
+                type: object
+                additionalProperties: true
+              reason:
+                type: string
+              score:
+                type: number
+                minimum: 0
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    AlertType:
+      type: string
+      enum: [low_activity, churn_risk, conversion_anomaly, behavior_data_anomaly]
+    AlertStatus:
+      type: string
+      enum: [new, acknowledged, processing, resolved, ignored]
+    Alert:
+      type: object
+      required: [alertId, alertType, severity, status, triggerReason, createdAt]
+      properties:
+        alertId:
+          type: string
+        alertType:
+          $ref: '#/components/schemas/AlertType'
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        status:
+          $ref: '#/components/schemas/AlertStatus'
+        scopeType:
+          type: string
+        scopeId:
+          type: string
+        triggerReason:
+          type: string
+        ownerId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AlertUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/AlertStatus'
+        reason:
+          type: string
+    RecommendationInsight:
+      type: object
+      required: [insightId, targetType, targetId, productId, basisType, reason, priority, score, generatedAt]
+      properties:
+        insightId:
+          type: string
+        targetType:
+          type: string
+          enum: [user, segment]
+        targetId:
+          type: string
+        productId:
+          type: string
+        basisType:
+          type: string
+          enum: [browse_history, purchase_history, similar_users, user_profile]
+        reason:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        score:
+          type: number
+          minimum: 0
+          maximum: 100
+        generatedAt:
+          type: string
+          format: date-time
+    AIPreferenceResponse:
+      type: object
+      required: [model, behaviorWeights, items, generatedAt]
+      properties:
+        model:
+          $ref: '#/components/schemas/AIPreferenceModel'
+        behaviorWeights:
+          type: object
+          additionalProperties:
+            type: number
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIPreferenceUser'
+        generatedAt:
+          type: string
+          format: date-time
+    AIPreferenceModel:
+      type: object
+      required: [name, mode, cacheDir, loaded]
+      properties:
+        name:
+          type: string
+        mode:
+          type: string
+          enum: [sentence-transformers, fallback]
+        cacheDir:
+          type: string
+        loaded:
+          type: boolean
+        loadError:
+          type: string
+          nullable: true
+    AIPreferenceUser:
+      type: object
+      required: [userId, primaryCategory, primaryConfidence, categories]
+      properties:
+        userId:
+          type: string
+        primaryCategory:
+          type: string
+          nullable: true
+        primaryConfidence:
+          type: number
+          minimum: 0
+          maximum: 100
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIPreferenceCategory'
+    AIPreferenceCategory:
+      type: object
+      required: [category, confidence, semanticSimilarity, behaviorScore, actionMix, evidenceProducts]
+      properties:
+        category:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 100
+        semanticSimilarity:
+          type: number
+        behaviorScore:
+          type: number
+          minimum: 0
+        actionMix:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        evidenceProducts:
+          type: array
+          items:
+            type: object
+            required: [productId, productName, score]
+            properties:
+              productId:
+                type: string
+              productName:
+                type: string
+              score:
+                type: number
+                minimum: 0
+    PurchaseIntent:
+      type: object
+      required: [userId, intentLevel, basis, score, updatedAt]
+      properties:
+        userId:
+          type: string
+        maskedUser:
+          type: object
+          additionalProperties: true
+        intentLevel:
+          type: string
+          enum: [high, medium, low, cart_unpaid]
+        relatedProductId:
+          type: string
+        basis:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 100
+        updatedAt:
+          type: string
+          format: date-time
+    PurchaseIntentPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseIntent'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    ReportType:
+      type: string
+      enum: [behavior_detail, product_analysis, funnel, user_profile, user_segment, sales_conversion, operation_effect]
+    Report:
+      type: object
+      required: [reportId, reportType, filters, status, sensitiveDataState, createdAt]
+      properties:
+        reportId:
+          type: string
+        reportType:
+          $ref: '#/components/schemas/ReportType'
+        filters:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [ready, queued, failed, expired]
+        sensitiveDataState:
+          type: string
+          enum: [masked, unmasked_authorized, not_applicable]
+        exportUri:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        freshnessAt:
+          type: string
+          format: date-time
+    ReportExportRequest:
+      type: object
+      required: [filters]
+      properties:
+        filters:
+          type: object
+          additionalProperties: true
+        reason:
+          type: string
+    AuditLog:
+      type: object
+      required: [auditId, actorId, action, resourceType, result, createdAt]
+      properties:
+        auditId:
+          type: string
+        actorId:
+          type: string
+        actorRole:
+          type: string
+        action:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        result:
+          type: string
+          enum: [success, denied, failed]
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time

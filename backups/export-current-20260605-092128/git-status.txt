@@ -1,0 +1,26 @@
+﻿ M .env.example
+ M backend/scripts/create_mysql_database.sql
+ M backend/src/analytics/behavior_summary_service.py
+ M backend/src/analytics/funnel_service.py
+ M backend/src/analytics/product_heat_service.py
+ M backend/src/api/compat.py
+ M backend/src/api/routes/profiles.py
+ M backend/src/api/routes/reports.py
+ M backend/src/reports/export_service.py
+ M backend/src/reports/report_service.py
+ M backend/src/services/alert_rule_service.py
+ M backend/src/services/alert_workflow_service.py
+ M backend/src/services/profile_service.py
+ M backend/src/services/purchase_intent_service.py
+ M backend/src/services/recommendation_service.py
+ M backend/src/services/segment_service.py
+ M backend/tests/integration/test_report_export_security.py
+ M docker-compose.yml
+ M frontend/src/App.tsx
+?? .workbuddy/
+?? backups/
+?? docs/demo_flow_and_algorithm_notes.docx
+?? docs/project_progress_review.docx
+?? frontend/public/assets/products/generated/
+?? "\350\277\233\345\272\246\345\256\211\346\216\222\350\241\250\346\240\274/"
+?? "\351\241\271\347\233\256\345\210\206\345\267\245/"
